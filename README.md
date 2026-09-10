@@ -1,55 +1,116 @@
-# Obrador Ixtlahuacán — WhatsApp Bot
+# Obrador Ixtlahuacán — WhatsApp Bot (Next.js / Vercel)
 
-Bot de WhatsApp para **Obrador Ixtlahuacán** (canal Whapi `STARLD-SMKHX`, +52 33 1451 8120).
+Bot de WhatsApp para **Obrador Ixtlahuacán** (mayorista de carne, Ixtlahuacán del Río, Jalisco).
 
-Stack: Python 3 + FastAPI + Whapi.Cloud + OpenAI Chat Completions.
+**Stack:** Next.js App Router + TypeScript → Whapi.cloud → OpenAI Chat Completions (tool `enviar_pedido_a_admin`) → Vercel.
 
-## Setup
+Puerto desde el bot Python/FastAPI. Plantilla base: Flujo Propio starter.
 
-```bash
-cd /workspace/obrador-bot
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env   # llenar WHAPI_TOKEN y OPENAI_API_KEY
+---
+
+## Qué incluye
+
+| Pieza | Rol |
+|-------|-----|
+| `app/api/webhook/route.ts` | Entrada Whapi: secret, `fromMe`, dedupe, GPS, historial, tool lead, reply |
+| `app/api/health/route.ts` | Health check (sin secretos en claro) |
+| `lib/whapi.ts` | `sendText(to, body)` → `POST {WHAPI_BASE_URL}/messages/text` |
+| `lib/mexicoJid.ts` | Normaliza MX a `521XXXXXXXXXX@s.whatsapp.net` |
+| `lib/brief.ts` | System prompt + tool desde `config/client-brief.json` |
+| `lib/bot.ts` | Flujo OpenAI + handoff admin (1 lead + 1 update por chat) |
+| `lib/dedupe.ts` | Dedupe en memoria por `message.id` |
+| `lib/history.ts` | Historial corto en memoria por `chat_id` |
+| `lib/leads.ts` | Tracking de leads enviados al admin |
+| `config/client-brief.json` | Catálogo, horario, dirección, política de cotización |
+
+---
+
+## Auth del webhook
+
+1. **Preferido:** header `x-bot-webhook-secret: <WEBHOOK_SECRET>`
+2. **Fallback:** query `?secret=<WEBHOOK_SECRET>`
+
+Si `WEBHOOK_SECRET` no está definido, el endpoint responde **401**.
+
+Forma de URL:
+
+```text
+https://<proyecto>.vercel.app/api/webhook
+https://<proyecto>.vercel.app/api/webhook?secret=<WEBHOOK_SECRET>
 ```
 
-## Run
+Ejemplo curl:
 
 ```bash
-source .venv/bin/activate
-export WHAPI_TOKEN=... OPENAI_API_KEY=...
-uvicorn main:app --host 0.0.0.0 --port 8080
+curl -X POST "https://<proyecto>.vercel.app/api/webhook" \
+  -H "Content-Type: application/json" \
+  -H "x-bot-webhook-secret: $WEBHOOK_SECRET" \
+  -d '{"messages":[{"id":"test-1","from_me":false,"chat_id":"5215551234567@s.whatsapp.net","type":"text","text":{"body":"Hola"}}]}'
 ```
 
-## Endpoints
+---
 
-| Method | Path | Descripción |
-|--------|------|-------------|
-| GET | `/health` | Health check |
-| POST | `/webhook` | Webhook Whapi (`messages` / `messages.post`) |
+## Variables de entorno
 
-En Whapi Settings, apunta el webhook a `https://<tu-tunnel>/webhook` y habilita el evento `messages.post`.
+```bash
+WHAPI_TOKEN=
+WHAPI_BASE_URL=https://gate.whapi.cloud
+OPENAI_API_KEY=
+OPENAI_MODEL=gpt-4o-mini
+WEBHOOK_SECRET=
+ADMIN_PHONE=5213312974282@s.whatsapp.net
+MAX_HISTORY=24
+```
 
-## Notas
+Nunca commits de `.env`, `.env.local` ni `.secrets.json`.
 
-- Historial corto en memoria por `chat_id` (se pierde al reiniciar).
-- Deduplica por message `id`.
-- Ignora eventos no-mensaje, mensajes `from_me` y tipos no-texto.
-- Secretos solo desde variables de entorno; nunca se loguean.
+---
 
+## Orden de deploy
 
-## Deploy en Render (free)
+1. **Primero Vercel** (importa este repo, configura env, deploy).
+2. **Después Whapi**: apunta el webhook a la URL pública de Vercel.
+3. **No uses túneles** para producción.
 
-1. Sube este repo a GitHub.
-2. En [Render](https://render.com) → **New** → **Web Service** → conecta el repo.
-3. Runtime: Python. Build: `pip install -r requirements.txt`. Start: `uvicorn main:app --host 0.0.0.0 --port $PORT`.
-4. Environment variables:
-   - `WHAPI_TOKEN`
-   - `OPENAI_API_KEY`
-   - `ADMIN_PHONE=5213312974282@s.whatsapp.net`
-5. Tras el deploy, en Whapi Settings pon:
-   `https://<tu-servicio>.onrender.com/webhook`
-   con evento `messages` / `messages.post`.
+En Whapi (Settings → Webhook):
 
-Nota: el plan free puede *dormir* sin tráfico; el primer mensaje a veces tarda.
+- URL: `https://<proyecto>.vercel.app/api/webhook`
+- Método: **POST**
+- Eventos: **`messages`** y/o **`messages.post`**
+- Activa **`callback_persist`**
+- Envía el secret en header `x-bot-webhook-secret` (o `?secret=` en la URL)
+
+### JID México
+
+Móviles MX en Whapi: `521` + **10 dígitos** + `@s.whatsapp.net`  
+Ejemplo: `5213312974282@s.whatsapp.net`
+
+---
+
+## Funciones del bot
+
+- Cotización **solo por volumen** (nunca inventa precios).
+- Catálogo mayorista (canales, cabezas, vísceras, grasas); mínimo ~10 kg.
+- Ubicación GPS (`location` + `live_location`) con lat/lng null-safe → Maps link.
+- Tool `enviar_pedido_a_admin`: notifica al admin una vez por lead + una actualización.
+- Historial y dedupe en memoria (se pierden en cold start; usar DB en prod multi-instancia).
+
+---
+
+## Desarrollo local
+
+```bash
+cp .env.example .env.local
+# llena WHAPI_TOKEN, OPENAI_API_KEY, WEBHOOK_SECRET
+npm install
+npm run build
+npm run dev
+```
+
+Health: `GET http://localhost:3000/api/health`
+
+---
+
+## Personalizar
+
+Edita `config/client-brief.json` (catálogo, horario, FAQs) y redeploy en Vercel.
